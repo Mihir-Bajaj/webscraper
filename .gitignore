@@ -15,5 +15,5 @@ pgdata/
 # Logs
 *.log
 
-# Secrets (if you ever add them)
+
 .env
