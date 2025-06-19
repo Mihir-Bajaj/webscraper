@@ -46,7 +46,7 @@ class AiohttpFetcher(Fetcher):
         ```
     """
     
-    def __init__(self, concurrency: int = 8):
+    def __init__(self, concurrency: int = 20):
         """
         Initialize the fetcher with specified concurrency limit.
         

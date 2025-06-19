@@ -24,6 +24,8 @@ from typing import List, Set, Tuple, Optional, Dict  # Type hints for Python
 from urllib.parse import urljoin, urlparse, urldefrag  # Tools for URL handling
 from bs4 import BeautifulSoup  # Library for parsing HTML
 import logging  # For logging messages and errors
+import inspect
+import aiohttp
 
 # Importing configuration from settings file
 from src.config.settings import (
@@ -63,7 +65,7 @@ class Crawler:
         The crawler is configured using settings from CRAWLER_CONFIG and DB_CONFIG.
         """
         # Initialize the crawler components
-        self.fetcher = FETCHER_CLS(concurrency=CRAWLER_CONFIG["concurrency"])  # Handles multiple concurrent requests
+        self.fetcher_cls = FETCHER_CLS  # Store fetcher class for dynamic instantiation
         self.parser = PARSER_CLS()  # Parses HTML content
         self.store = STORAGE_CLS(DB_CONFIG)  # Stores crawled data
         self.frontier: Set[str] = set()  # Set of URLs waiting to be processed
@@ -233,6 +235,63 @@ class Crawler:
             
             logger.info(f"Added {added_count} new URLs to frontier from {url}")
 
+    async def _crawl_loop(self, fetcher, start_url: str) -> None:
+        """
+        Internal method to run the BFS crawl loop using the provided fetcher.
+        """
+        # Standardize the starting URL
+        start_url = self.canonical(start_url)
+        # Initialize data structures
+        self.frontier = {start_url}  # URLs to process
+        self.depth_map = {start_url: 0}  # Track depth of each URL
+        self.processed = set()  # URLs we've already processed
+        current_depth = 0  # Start at depth 0
+
+        logger.info(f"Starting crawl from {start_url}")
+        logger.info(f"Max depth: {CRAWLER_CONFIG['max_depth']}")
+        logger.info(f"Max pages: {CRAWLER_CONFIG['max_pages']}")
+
+        # Continue crawling until we run out of URLs, reach max depth, or process max pages
+        while (self.frontier and 
+               current_depth <= CRAWLER_CONFIG["max_depth"] and 
+               len(self.processed) < CRAWLER_CONFIG["max_pages"]):
+            
+            # Get all URLs at the current depth level (BFS approach)
+            batch = {url for url in self.frontier if self.depth_map[url] == current_depth}
+            if not batch:
+                # If no URLs at current depth, move to next depth
+                logger.info(f"No more URLs at depth {current_depth}, moving to next depth")
+                current_depth += 1
+                continue
+
+            # Remove batch URLs from the frontier
+            self.frontier -= batch
+            logger.info(f"Processing {len(batch)} URLs at depth {current_depth}")
+            logger.info(f"Frontier size: {len(self.frontier)}, Total processed: {len(self.processed)}")
+
+            # Fetch all URLs in the batch concurrently
+            htmls = await asyncio.gather(*(fetcher.get(u) for u in batch))
+
+            # Process each fetched page
+            for url, html in zip(batch, htmls):
+                if html is not None:  # Only process if fetch was successful
+                    await self.process_page(url, html, current_depth)
+                self.processed.add(url)  # Mark as processed regardless of fetch result
+
+            # Wait before next batch (to be polite to servers)
+            await asyncio.sleep(CRAWLER_CONFIG["crawl_delay"])
+            
+            # Print progress information
+            print(f"\nDepth {current_depth}: {len(self.frontier)} URLs in frontier, {len(self.processed)} URLs processed")
+            logger.info(f"Depth {current_depth} complete. Frontier: {len(self.frontier)}, Processed: {len(self.processed)}")
+
+            # Check if we need to move to the next depth
+            if not any(self.depth_map[url] == current_depth for url in self.frontier):
+                current_depth += 1
+                logger.info(f"Moving to depth {current_depth}")
+
+        logger.info(f"Crawl complete. Total pages processed: {len(self.processed)}")
+
     async def crawl(self, start_url: str) -> None:
         """
         Crawl a website starting from the given URL using BFS.
@@ -256,60 +315,17 @@ class Crawler:
             # Depth 2: example.com/about/team, example.com/contact/form
             # etc.
         """
-        # Standardize the starting URL
-        start_url = self.canonical(start_url)
-        # Initialize data structures
-        self.frontier = {start_url}  # URLs to process
-        self.depth_map = {start_url: 0}  # Track depth of each URL
-        self.processed = set()  # URLs we've already processed
-        current_depth = 0  # Start at depth 0
-
-        logger.info(f"Starting crawl from {start_url}")
-        logger.info(f"Max depth: {CRAWLER_CONFIG['max_depth']}")
-        logger.info(f"Max pages: {CRAWLER_CONFIG['max_pages']}")
-
-        # Set up the fetcher context
-        async with self.fetcher:
-            # Continue crawling until we run out of URLs, reach max depth, or process max pages
-            while (self.frontier and 
-                   current_depth <= CRAWLER_CONFIG["max_depth"] and 
-                   len(self.processed) < CRAWLER_CONFIG["max_pages"]):
-                
-                # Get all URLs at the current depth level (BFS approach)
-                batch = {url for url in self.frontier if self.depth_map[url] == current_depth}
-                if not batch:
-                    # If no URLs at current depth, move to next depth
-                    logger.info(f"No more URLs at depth {current_depth}, moving to next depth")
-                    current_depth += 1
-                    continue
-
-                # Remove batch URLs from the frontier
-                self.frontier -= batch
-                logger.info(f"Processing {len(batch)} URLs at depth {current_depth}")
-                logger.info(f"Frontier size: {len(self.frontier)}, Total processed: {len(self.processed)}")
-
-                # Fetch all URLs in the batch concurrently
-                htmls = await asyncio.gather(*(self.fetcher.get(u) for u in batch))
-
-                # Process each fetched page
-                for url, html in zip(batch, htmls):
-                    if html is not None:  # Only process if fetch was successful
-                        await self.process_page(url, html, current_depth)
-                    self.processed.add(url)  # Mark as processed regardless of fetch result
-
-                # Wait before next batch (to be polite to servers)
-                await asyncio.sleep(CRAWLER_CONFIG["crawl_delay"])
-                
-                # Print progress information
-                print(f"\nDepth {current_depth}: {len(self.frontier)} URLs in frontier, {len(self.processed)} URLs processed")
-                logger.info(f"Depth {current_depth} complete. Frontier: {len(self.frontier)}, Processed: {len(self.processed)}")
-
-                # Check if we need to move to the next depth
-                if not any(self.depth_map[url] == current_depth for url in self.frontier):
-                    current_depth += 1
-                    logger.info(f"Moving to depth {current_depth}")
-
-        logger.info(f"Crawl complete. Total pages processed: {len(self.processed)}")
+        # decide which style of fetcher to build
+        if 'session' in inspect.signature(self.fetcher_cls.__init__).parameters:
+            # FirecrawlFetcher style
+            async with aiohttp.ClientSession() as session:
+                fetcher = self.fetcher_cls(session)
+                await self._crawl_loop(fetcher, start_url)
+        else:
+            # Old AiohttpFetcher style
+            fetcher = self.fetcher_cls(concurrency=CRAWLER_CONFIG["concurrency"])
+            async with fetcher:
+                await self._crawl_loop(fetcher, start_url)
 
 # Entry point function when script is run directly
 async def main():

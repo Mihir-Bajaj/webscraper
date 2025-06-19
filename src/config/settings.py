@@ -34,11 +34,19 @@ SEARCH_CONFIG = {
 
 # Class imports
 from src.core.implementations.aiohttp_fetcher import AiohttpFetcher
+from src.core.implementations.firecrawl_fetcher import FirecrawlFetcher
 from src.core.implementations.readability_parser import ReadabilityParser
 from src.core.implementations.postgres_storage import PostgresStorage
 from src.core.implementations.mpnet_encoder import MpnetEncoder
 
-FETCHER_CLS = AiohttpFetcher
+USE_FIRECRAWL = True           # flip to False to revert
+
+# Conditionally set the fetcher class based on USE_FIRECRAWL flag
+if USE_FIRECRAWL:
+    FETCHER_CLS = FirecrawlFetcher
+else:
+    FETCHER_CLS = AiohttpFetcher
+
 PARSER_CLS = ReadabilityParser
 STORAGE_CLS = PostgresStorage
-ENCODER_CLS = MpnetEncoder 
+ENCODER_CLS = MpnetEncoder
