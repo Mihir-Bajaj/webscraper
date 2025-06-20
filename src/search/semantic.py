@@ -1,5 +1,28 @@
 """
 Semantic search functionality for the webscraper project.
+
+This module provides semantic search capabilities using:
+• BGE-Large-EN model (1024 dimensions) for high-quality embeddings
+• PostgreSQL with pgvector extension for efficient similarity search
+• HNSW index for fast approximate nearest neighbor search
+• Configurable search parameters for optimal results
+
+Features:
+- Vector similarity search using cosine distance
+- Configurable top-k results and search precision
+- Formatted output with scores and content previews
+- Command-line interface for easy testing
+
+Example:
+    ```python
+    # Search from command line
+    python -m src.search.semantic "custom software development"
+    
+    # Search programmatically
+    with SemanticSearch() as search:
+        results = search.search("custom software development", top_k=5)
+        print(search.format_results(results))
+    ```
 """
 from typing import List, Tuple, Optional
 import sys

@@ -1,7 +1,7 @@
 """
 Central configuration for the webscraper project.
 """
-from typing import Dict, Any
+from typing import Dict
 
 # Database configuration
 DB_CONFIG: Dict[str, str] = {
@@ -13,8 +13,7 @@ DB_CONFIG: Dict[str, str] = {
 
 # Model configuration
 MODEL_CONFIG = {
-    "name": "sentence-transformers/all-mpnet-base-v2",
-    "dim": 768,
+    "name": "BAAI/bge-large-en-v1.5",
     "chunk_tokens": 500,
 }
 
@@ -22,8 +21,7 @@ MODEL_CONFIG = {
 CRAWLER_CONFIG = {
     "max_depth": 3,
     "max_pages": 1_000,
-    "crawl_delay": 1.0,
-    "concurrency": 8,
+    "crawl_delay": 0.2,
 }
 
 # Search configuration
@@ -33,20 +31,11 @@ SEARCH_CONFIG = {
 }
 
 # Class imports
-from src.core.implementations.aiohttp_fetcher import AiohttpFetcher
 from src.core.implementations.firecrawl_fetcher import FirecrawlFetcher
-from src.core.implementations.readability_parser import ReadabilityParser
+from src.core.implementations.firecrawl_parser import FirecrawlParser
 from src.core.implementations.postgres_storage import PostgresStorage
-from src.core.implementations.mpnet_encoder import MpnetEncoder
 
-USE_FIRECRAWL = True           # flip to False to revert
-
-# Conditionally set the fetcher class based on USE_FIRECRAWL flag
-if USE_FIRECRAWL:
-    FETCHER_CLS = FirecrawlFetcher
-else:
-    FETCHER_CLS = AiohttpFetcher
-
-PARSER_CLS = ReadabilityParser
+# Component classes
+FETCHER_CLS = FirecrawlFetcher
+PARSER_CLS = FirecrawlParser
 STORAGE_CLS = PostgresStorage
-ENCODER_CLS = MpnetEncoder

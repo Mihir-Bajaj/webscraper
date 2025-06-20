@@ -1,32 +1,36 @@
 """
-PostgreSQL-based implementation of the Storage interface.
+PostgreSQL storage implementation for the webscraper project.
 
-This module provides a storage implementation using PostgreSQL to store
-and manage web page data, including content, checksums, and embeddings.
+This module provides a PostgreSQL-based storage backend that:
+• Stores page content, metadata, and embeddings
+• Tracks content changes using markdown checksums
+• Supports vector similarity search with pgvector
+• Manages hybrid Firecrawl + Readability data
 
-The implementation:
-1. Stores page content and metadata
-2. Tracks content and HTML changes
-3. Manages page and chunk embeddings
-4. Uses efficient bulk operations
+Database schema:
+- pages: Main page data with clean_text (Readability) and metadata (Firecrawl)
+- chunks: Text chunks with vector embeddings for semantic search
+- Uses markdown_checksum for change detection (from Firecrawl markdown)
+- Stores metadata as JSONB for flexible querying
 
 Example:
     ```python
-    # Create storage with database config
-    storage = PostgresStorage({
-        "dbname": "webscraper",
-        "user": "postgres",
-        "password": "secret"
-    })
-    
-    # Store page data
-    content_changed, html_changed = storage.upsert_page(assets)
+    storage = PostgresStorage(db_config)
+    assets = PageAssets(
+        url="https://example.com",
+        title="Example",
+        clean_text="Clean content from Readability",
+        seo_head='{"markdown": "# Example", "links": ["https://example.com/about"]}',
+        raw_html="<html>...</html>"
+    )
+    content_changed, _ = storage.upsert_page(assets)
     ```
 """
 import psycopg2
+import hashlib
+import json
 from src.core.interfaces.storage import Storage
 from src.core.interfaces.parser import PageAssets
-from src.core.checksum import content_and_hash, compute_head_checksum
 
 class PostgresStorage(Storage):
     """
@@ -34,11 +38,11 @@ class PostgresStorage(Storage):
     
     This implementation uses PostgreSQL to store:
     1. Page content and metadata
-    2. Content and HTML checksums
+    2. Markdown checksums (from Firecrawl)
     3. Change timestamps
     4. Page and chunk embeddings
     
-    The storage tracks changes in both content and HTML structure,
+    The storage tracks changes in markdown content,
     making it easy to identify which pages need re-embedding.
     
     Attributes:
@@ -62,7 +66,7 @@ class PostgresStorage(Storage):
             seo_head="<head>...</head>",
             raw_html="<html>...</html>"
         )
-        content_changed, html_changed = storage.upsert_page(assets)
+        content_changed, _ = storage.upsert_page(assets)
         ```
     """
     
@@ -85,84 +89,111 @@ class PostgresStorage(Storage):
         self.conn.autocommit = True
         self.cur  = self.conn.cursor()
 
+    def _compute_markdown_checksum(self, markdown_content: str) -> str:
+        """Compute SHA256 hash of markdown content."""
+        return hashlib.sha256(markdown_content.encode('utf-8')).hexdigest()
+
+    def _extract_metadata(self, seo_head: str) -> dict:
+        """Extract metadata from seo_head JSON string."""
+        try:
+            if seo_head and seo_head.strip():
+                return json.loads(seo_head)
+            return {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
     def upsert_page(self, assets: PageAssets) -> tuple[bool, bool]:
         """
         Store or update page data.
         
         This method:
-        1. Computes content and HTML checksums
-        2. Inserts new pages if they don't exist
-        3. Updates existing pages and tracks changes
-        4. Returns change flags
+        1. Computes markdown checksum from clean_text (Firecrawl markdown)
+        2. Extracts metadata from seo_head
+        3. Inserts new pages if they don't exist
+        4. Updates existing pages and tracks changes
+        5. Returns change flags (content_changed, _) - second value is always False now
         
         Args:
             assets: The page assets to store or update
             
         Returns:
-            Tuple of (content_changed, html_changed) where:
+            Tuple of (content_changed, _) where:
             - content_changed: True if the page content has changed
-            - html_changed: True if the HTML structure has changed
+            - _: Always False (kept for interface compatibility)
             
         Example:
             >>> storage = PostgresStorage(db_cfg)
             >>> assets = PageAssets(
             ...     url="https://example.com",
             ...     title="Example",
-            ...     clean_text="Content",
-            ...     seo_head="<head>...</head>",
+            ...     clean_text="# Example\n\nContent from Firecrawl",
+            ...     seo_head='{"links": ["https://example.com/about"], "source": "firecrawl"}',
             ...     raw_html="<html>...</html>"
             ... )
-            >>> content_changed, html_changed = storage.upsert_page(assets)
+            >>> content_changed, _ = storage.upsert_page(assets)
             >>> content_changed  # True for new pages
             True
         """
-        # recompute checksums from raw_html
-        clean_text, content_cs = content_and_hash(assets.raw_html)
-        head_cs                = compute_head_checksum(assets.raw_html)
-
-        # 1. insert brand-new row
-        self.cur.execute(
-            """
-            INSERT INTO pages (
-              url, title, clean_text,
-              content_checksum, html_checksum,
-              last_seen, content_changed, html_changed
+        try:
+            # Compute markdown checksum from clean_text (Firecrawl markdown)
+            markdown_cs = self._compute_markdown_checksum(assets.clean_text)
+            
+            # Extract metadata from seo_head
+            metadata = self._extract_metadata(assets.seo_head)
+            
+            # Check if page exists and get current checksum
+            self.cur.execute(
+                "SELECT markdown_checksum FROM pages WHERE url = %s",
+                (assets.url,)
             )
-            VALUES (%s,%s,%s,%s,%s,NOW(),NOW(),NOW())
-            ON CONFLICT (url) DO NOTHING
-            RETURNING 1;
-            """,
-            (assets.url, assets.title, clean_text, content_cs, head_cs),
-        )
-        if self.cur.fetchone():
-            return True, True        # both kinds changed (brand-new)
-
-        # 2. compare to existing
-        self.cur.execute(
-            "SELECT content_checksum, html_checksum FROM pages WHERE url=%s",
-            (assets.url,),
-        )
-        old_content, old_head = self.cur.fetchone()
-        c_changed = old_content != content_cs
-        h_changed = old_head    != head_cs
-
-        # 3. update row + timestamps
-        self.cur.execute(
-            """
-            UPDATE pages
-            SET last_seen = NOW(),
-                title     = %s,
-                clean_text= %s,
-                content_checksum = %s,
-                html_checksum    = %s,
-                content_changed  = CASE WHEN %s THEN NOW() ELSE content_changed END,
-                html_changed     = CASE WHEN %s THEN NOW() ELSE html_changed  END
-            WHERE url = %s
-            """,
-            (assets.title, clean_text, content_cs, head_cs,
-             c_changed, h_changed, assets.url),
-        )
-        return c_changed, h_changed
+            result = self.cur.fetchone()
+            
+            if result is None:
+                # Insert new page
+                self.cur.execute(
+                    """
+                    INSERT INTO pages (
+                        url, title, clean_text, raw_html, markdown_checksum, 
+                        markdown_changed, metadata, last_seen
+                    ) VALUES (%s, %s, %s, %s, %s, NOW(), %s, NOW())
+                    """,
+                    (
+                        assets.url, assets.title, assets.clean_text, assets.raw_html,
+                        markdown_cs, json.dumps(metadata)
+                    )
+                )
+                self.conn.commit()
+                return True, False  # content_changed=True, seo_changed=False
+            else:
+                # Update existing page if content changed
+                old_checksum = result[0]
+                if old_checksum != markdown_cs:
+                    self.cur.execute(
+                        """
+                        UPDATE pages SET 
+                            title = %s, clean_text = %s, raw_html = %s,
+                            markdown_checksum = %s, markdown_changed = NOW(),
+                            metadata = %s, last_seen = NOW()
+                        WHERE url = %s
+                        """,
+                        (
+                            assets.title, assets.clean_text, assets.raw_html,
+                            markdown_cs, json.dumps(metadata), assets.url
+                        )
+                    )
+                    self.conn.commit()
+                    return True, False  # content_changed=True, seo_changed=False
+                else:
+                    # Only update last_seen if content hasn't changed
+                    self.cur.execute(
+                        "UPDATE pages SET last_seen = NOW() WHERE url = %s",
+                        (assets.url,)
+                    )
+                    self.conn.commit()
+                    return False, False  # content_changed=False, seo_changed=False
+        except Exception as e:
+            print(f"[ERROR] Exception in upsert_page: {e}")
+            raise
 
     def pages_for_embedding(self) -> list[tuple[str, str]]:
         """

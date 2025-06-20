@@ -10,7 +10,7 @@ Example
 """
 
 import sys
-from ..semantic_query import main as query_main  # assumes semantic_query.py defines main()
+from .semantic import SemanticSearch
 
 def main() -> None:
     if len(sys.argv) < 2:
@@ -18,7 +18,10 @@ def main() -> None:
         sys.exit(1)
 
     query = " ".join(sys.argv[1:])     # support multi-word queries
-    query_main(query)
+    
+    with SemanticSearch() as search:
+        results = search.search(query)
+        print(search.format_results(results))
 
 if __name__ == "__main__":  # pragma: no cover
     main()

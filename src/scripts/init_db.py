@@ -18,20 +18,20 @@ def init_db():
             url           text PRIMARY KEY,
             title         text,
             clean_text    text,
-            content_checksum text,
-            html_checksum    text,
+            raw_html      text,
+            markdown_checksum text,
+            markdown_changed timestamptz,
+            metadata      jsonb,
             last_seen     timestamptz,
-            content_changed timestamptz,
-            html_changed    timestamptz,
-            summary_vec   vector(768),  -- matches MPNet's size
+            summary_vec   vector(1024),
             embedded_at   timestamptz
         );
 
         CREATE TABLE IF NOT EXISTS chunks (
-            page_url      text REFERENCES pages(url) ON DELETE CASCADE,
-            chunk_index   int,
-            text          text,
-            vec           vector(768),
+            page_url    text REFERENCES pages(url) ON DELETE CASCADE,
+            chunk_index integer,
+            text        text,
+            vec         vector(1024),
             PRIMARY KEY (page_url, chunk_index)
         );
         """
@@ -43,6 +43,14 @@ def init_db():
         CREATE INDEX IF NOT EXISTS chunks_vec_idx ON chunks 
         USING hnsw (vec vector_cosine_ops)
         WITH (m = 16, ef_construction = 64);
+        """
+    )
+
+    # Create indexes for the new schema
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pages_markdown_checksum ON pages(markdown_checksum);
+        CREATE INDEX IF NOT EXISTS idx_pages_metadata ON pages USING GIN(metadata);
         """
     )
 

@@ -24,7 +24,6 @@ from typing import List, Set, Tuple, Optional, Dict  # Type hints for Python
 from urllib.parse import urljoin, urlparse, urldefrag  # Tools for URL handling
 from bs4 import BeautifulSoup  # Library for parsing HTML
 import logging  # For logging messages and errors
-import inspect
 import aiohttp
 
 # Importing configuration from settings file
@@ -170,7 +169,7 @@ class Crawler:
         logger.info(f"Found {len(links)} unique same-domain links on {base}")
         return list(links)
 
-    async def process_page(self, url: str, html: str, depth: int) -> None:
+    async def process_page(self, url: str, fetch_result, depth: int) -> None:
         """
         Process a single page: store its content and collect its links.
         
@@ -182,29 +181,19 @@ class Crawler:
         
         Args:
             url: The URL of the page being processed
-            html: The HTML content of the page
+            fetch_result: The FetchResult containing HTML and extra data
             depth: The current depth in the crawl
-            
-        Example:
-            >>> await crawler.process_page(
-            ...     "https://example.com",
-            ...     "<html><body><a href='/about'>About</a></body></html>",
-            ...     0
-            ... )
-            # Will:
-            # 1. Parse and store the page content
-            # 2. Extract the /about link
-            # 3. Add https://example.com/about to the frontier
         """
         # Skip if we couldn't fetch the page
-        if html is None:
-            logger.warning(f"Failed to fetch {url}")
+        if fetch_result is None or fetch_result.error:
+            logger.warning(f"Failed to fetch {url}: {fetch_result.error if fetch_result else 'No result'}")
             return
 
         logger.info(f"Processing page at depth {depth}: {url}")
         
         # Use the parser to extract assets (text, images, etc.) from the page
-        assets = self.parser.parse(url, html)
+        # Pass the extra data (markdown, links) to the parser
+        assets = self.parser.parse(url, fetch_result.content, fetch_result.extra)
         # Store the page data and check if content or SEO elements changed
         content_changed, seo_changed = self.store.upsert_page(assets)
 
@@ -220,9 +209,27 @@ class Crawler:
 
         # Only look for new links if we haven't reached max depth
         if depth + 1 <= CRAWLER_CONFIG["max_depth"]:
-            # Extract links from the HTML
-            new_links = self.same_domain_links(url, html)
-            logger.info(f"Found {len(new_links)} new links on {url}")
+            # Use links from Firecrawl if available, otherwise extract from HTML
+            if fetch_result.extra and "links" in fetch_result.extra:
+                firecrawl_links = fetch_result.extra["links"]
+                # Filter Firecrawl links to same domain
+                base_domain = urlparse(url).netloc
+                new_links = []
+                for link in firecrawl_links:
+                    try:
+                        canonical_link = self.canonical(link)
+                        if urlparse(canonical_link).netloc == base_domain:
+                            new_links.append(canonical_link)
+                        else:
+                            logger.debug(f"Skipping external Firecrawl link: {canonical_link}")
+                    except Exception as e:
+                        logger.warning(f"Error processing Firecrawl link {link}: {e}")
+                        continue
+                logger.info(f"Using {len(new_links)} same-domain links from Firecrawl for {url} (filtered from {len(firecrawl_links)} total)")
+            else:
+                # Fallback to extracting links from HTML
+                new_links = self.same_domain_links(url, fetch_result.content)
+                logger.info(f"Extracted {len(new_links)} links from HTML for {url}")
             
             added_count = 0
             for link in new_links:
@@ -270,12 +277,12 @@ class Crawler:
             logger.info(f"Frontier size: {len(self.frontier)}, Total processed: {len(self.processed)}")
 
             # Fetch all URLs in the batch concurrently
-            htmls = await asyncio.gather(*(fetcher.get(u) for u in batch))
+            fetch_results = await asyncio.gather(*(fetcher.fetch(u) for u in batch))
 
             # Process each fetched page
-            for url, html in zip(batch, htmls):
-                if html is not None:  # Only process if fetch was successful
-                    await self.process_page(url, html, current_depth)
+            for url, fetch_result in zip(batch, fetch_results):
+                if fetch_result is not None and not fetch_result.error:
+                    await self.process_page(url, fetch_result, current_depth)
                 self.processed.add(url)  # Mark as processed regardless of fetch result
 
             # Wait before next batch (to be polite to servers)
@@ -315,17 +322,9 @@ class Crawler:
             # Depth 2: example.com/about/team, example.com/contact/form
             # etc.
         """
-        # decide which style of fetcher to build
-        if 'session' in inspect.signature(self.fetcher_cls.__init__).parameters:
-            # FirecrawlFetcher style
-            async with aiohttp.ClientSession() as session:
-                fetcher = self.fetcher_cls(session)
-                await self._crawl_loop(fetcher, start_url)
-        else:
-            # Old AiohttpFetcher style
-            fetcher = self.fetcher_cls(concurrency=CRAWLER_CONFIG["concurrency"])
-            async with fetcher:
-                await self._crawl_loop(fetcher, start_url)
+        async with aiohttp.ClientSession() as session:
+            fetcher = self.fetcher_cls(session)
+            await self._crawl_loop(fetcher, start_url)
 
 # Entry point function when script is run directly
 async def main():

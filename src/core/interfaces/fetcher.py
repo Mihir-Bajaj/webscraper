@@ -35,13 +35,15 @@ class FetchResult:
         status_code: HTTP status code or equivalent
         content_type: MIME type of the content (optional)
         error: Error message if the fetch failed (optional)
+        extra: Additional data from the fetcher (e.g., markdown, links from Firecrawl)
         
     Example:
         >>> result = FetchResult(
         ...     url="https://example.com",
         ...     content="<html>Hello</html>",
         ...     status_code=200,
-        ...     content_type="text/html"
+        ...     content_type="text/html",
+        ...     extra={"markdown": "# Hello", "links": ["https://example.com/about"]}
         ... )
         >>> result.status_code
         200
@@ -51,6 +53,7 @@ class FetchResult:
     status_code: int
     content_type: Optional[str] = None
     error: Optional[str] = None
+    extra: Optional[dict] = None
 
 class Fetcher(Protocol):
     """

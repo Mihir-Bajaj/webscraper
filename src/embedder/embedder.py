@@ -1,22 +1,25 @@
 """
-Main embedding logic for the webscraper project.
+Embedding generation and storage for the webscraper project.
 
-This module handles the generation and storage of embeddings for web pages and their content chunks.
-It uses sentence-transformers to create vector embeddings that can be used for semantic search.
+This module handles the generation and storage of vector embeddings for web pages:
+• Uses BGE-Large-EN model (1024 dimensions) for high-quality embeddings
+• Splits content into chunks for granular semantic search
+• Stores embeddings in PostgreSQL with pgvector extension
+• Tracks embedding status to avoid redundant processing
 
-The embedding process:
-1. Identifies pages that need embedding (new or changed content)
-2. Generates page-level embeddings for the entire content
-3. Splits content into chunks and generates chunk-level embeddings
-4. Stores embeddings in a PostgreSQL database
+Features:
+- Page-level embeddings for overall content similarity
+- Chunk-level embeddings for detailed semantic search
+- Automatic change detection using markdown_checksum
+- Efficient bulk operations with execute_values
+- Progress tracking with tqdm
 
 Example:
     ```python
-    # Run the embedder on all pages that need embedding
-    with Embedder() as embedder:
-        embedder.run()
+    # Run embedding on all pages that need it
+    python -m src.embedder.embedder
     
-    # Or embed a single page
+    # Or embed a single page programmatically
     with Embedder() as embedder:
         embedder.embed_page(
             "https://example.com",
@@ -30,7 +33,7 @@ from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 from psycopg2.extras import execute_values
 
-from src.config.settings import DB_CONFIG, MODEL_CONFIG, ENCODER_CLS
+from src.config.settings import DB_CONFIG, MODEL_CONFIG, CRAWLER_CONFIG, SEARCH_CONFIG
 from src.embedder.chunker import TextChunker
 
 class Embedder:
@@ -77,10 +80,10 @@ class Embedder:
         
         Queries the database for pages that either:
         1. Have never been embedded (embedded_at is NULL)
-        2. Have been modified since last embedding (content_changed > embedded_at)
+        2. Have been modified since last embedding (markdown_changed > embedded_at)
         
         Returns:
-            List of tuples containing (url, clean_text, content_changed, embedded_at)
+            List of tuples containing (url, clean_text, markdown_changed, embedded_at)
             
         Example:
             >>> embedder.get_targets()
@@ -91,10 +94,10 @@ class Embedder:
         """
         self.cur.execute(
             """
-            SELECT url, clean_text, content_changed, embedded_at
+            SELECT url, clean_text, markdown_changed, embedded_at
             FROM pages
             WHERE clean_text IS NOT NULL
-              AND (embedded_at IS NULL OR content_changed > embedded_at)
+              AND (embedded_at IS NULL OR markdown_changed > embedded_at)
             """
         )
         return self.cur.fetchall()

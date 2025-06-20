@@ -1,12 +1,32 @@
 """
 Firecrawl-backed implementation of the Fetcher interface.
 
-• Posts a URL to /v1/scrape
-• Returns html, markdown, and links directly
+This module provides a high-performance web scraping implementation using Firecrawl:
+• Posts URLs to /v1/scrape endpoint
+• Returns HTML, markdown, and links directly
+• Implements rate limiting and concurrent request management
+• Optimized for speed with reduced delays and increased concurrency
+
+Performance optimizations:
+- Rate limit: 0.2 seconds between requests (reduced from 1.0)
+- Concurrency: 8 simultaneous requests (increased from 3)
+- Poll delay: 1.0 seconds for status checking
+- Max retries: 3 attempts per URL
+
+Example:
+    ```python
+    async with aiohttp.ClientSession() as session:
+        fetcher = FirecrawlFetcher(session)
+        result = await fetcher.fetch("https://example.com")
+        if result.content:
+            print("HTML:", result.content[:100])
+            print("Markdown:", result.extra.get("markdown", "")[:100])
+            print("Links:", result.extra.get("links", [])[:3])
+    ```
 """
 
 from __future__ import annotations
-import aiohttp, asyncio, base64
+import aiohttp, asyncio
 from typing import Any, Dict
 from src.core.interfaces.fetcher import Fetcher, FetchResult
 
@@ -20,7 +40,7 @@ class FirecrawlFetcher(Fetcher):
         self._delay   = poll_delay
         self._firecrawl_url = FIRECRAWL_URL
         self._max_retries = max_retries
-        self._rate_limit = rate_limit  # seconds between requests (reduced from 0.5 to 0.2)
+        self._rate_limit = rate_limit  # seconds between requests (reduced from 1.0 to 0.2)
         self._last_request_time = 0
         self._request_semaphore = asyncio.Semaphore(8)  # Increased from 3 to 8 concurrent requests
 
@@ -44,9 +64,18 @@ class FirecrawlFetcher(Fetcher):
             body = {
                 "url": url,
                 "formats": ["html", "markdown", "links"],
-                "onlyMainContent": True,
+                "onlyMainContent": False,  # Changed to False to get more comprehensive content
                 "excludeTags": ["img", "video"],
-                "fastMode": False
+                "fastMode": False,
+                "waitFor": 0,
+                "mobile": False,
+                "parsePDF": True,
+                "skipTlsVerification": False,
+                "removeBase64Images": True,
+                "blockAds": True,
+                "maxAge": 0,
+                "storeInCache": True,
+                "timeout": 30000
             }
             
             for attempt in range(self._max_retries):
@@ -91,18 +120,6 @@ class FirecrawlFetcher(Fetcher):
             
             raise Exception(f"All {self._max_retries} attempts failed for {url}")
 
-    async def get(self, url: str) -> str | None:        # keep AioHTTP-style name
-        try:
-            data = await self._scrape_url(url)
-            
-            # Return the HTML content
-            html = data.get("html", "")
-            return html
-            
-        except Exception as e:
-            print(f"Error fetching {url}: {e}")
-            return None
-
     async def fetch(self, url: str) -> FetchResult:
         """Implement the Fetcher interface fetch method."""
         try:
@@ -111,14 +128,15 @@ class FirecrawlFetcher(Fetcher):
             html = data.get("html", "")
             markdown = data.get("markdown", "")
             links = data.get("links", [])
+            metadata = data.get("metadata", {})
             
-            # Pack markdown & links into FetchResult.extra for the parser
+            # Pack markdown, links, and metadata into FetchResult.extra for the parser
             return FetchResult(
                 url          = url,
                 content      = html,
                 status_code  = 200,
                 content_type = "text/html",
-                extra        = {"markdown": markdown, "links": links},
+                extra        = {"markdown": markdown, "links": links, "metadata": metadata},
             )
             
         except Exception as e:
