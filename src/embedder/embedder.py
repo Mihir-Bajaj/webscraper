@@ -32,6 +32,8 @@ import psycopg2
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 from psycopg2.extras import execute_values
+import re
+from urllib.parse import urlparse
 
 from src.config.settings import DB_CONFIG, MODEL_CONFIG, CRAWLER_CONFIG, SEARCH_CONFIG
 from src.embedder.chunker import TextChunker
@@ -197,6 +199,16 @@ class Embedder:
         for url, clean_text, content_ts, embedded_ts in tqdm(targets, desc="Pages"):
             self.embed_page(url, clean_text)
         print("✅  Embedding pass complete.")
+
+    @staticmethod
+    def is_crawlable_url(url: str) -> bool:
+        # Only allow http(s) URLs
+        return url.startswith("http://") or url.startswith("https://")
+
+def is_same_domain(url1, url2):
+    def strip_www(netloc):
+        return netloc.lower().lstrip('www.')
+    return strip_www(urlparse(url1).netloc) == strip_www(urlparse(url2).netloc)
 
 def main():
     """

@@ -10,6 +10,8 @@ A high-performance web crawling and semantic search system that uses Firecrawl f
 - **Async Crawling**: High-performance concurrent web scraping
 - **Change Detection**: Intelligent content change tracking
 - **Semantic Search**: Natural language query understanding
+- **Smart Domain Matching**: Handles www/non-www domain variations
+- **URL Validation**: Filters out non-crawlable URLs (javascript:, tel:, etc.)
 
 ## 🏗️ Architecture
 
@@ -21,179 +23,298 @@ A high-performance web crawling and semantic search system that uses Firecrawl f
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-## 📊 Data Flow Pipeline
-
-### 1. Crawler Execution (`python -m src.crawler.crawler https://aezion.com`)
-
-**Entry Point**: `src/crawler/__main__.py`
-- Parses command line arguments
-- Initializes crawler with configuration from `src/config/settings.py`
-- Starts async crawl process
-
-**Core Crawler**: `src/crawler/crawler.py`
-- **`Crawler.crawl()`**: Main orchestration method
-  - Initializes BFS frontier with start URL
-  - Processes pages level by level (depth 0, 1, 2, etc.)
-  - Manages concurrency and rate limiting
-
-**Web Fetching & Content Processing**: `src/core/implementations/firecrawl_fetcher.py` & `src/core/implementations/firecrawl_parser.py`
-- **`FirecrawlFetcher.fetch()`**: Sends URL to Firecrawl server
-  - POSTs to `http://localhost:3002/v1/scrape`
-  - Returns `FetchResult` with HTML, markdown, and links
-  - Implements rate limiting (0.2s between requests)
-  - Handles 8 concurrent requests via semaphore
-- **`FirecrawlParser.parse()`**: Extracts clean text and metadata from Firecrawl output
-  - Uses Firecrawl markdown and metadata for all content extraction
-  - Returns `PageAssets` object with all extracted data
-
-**Data Storage**: `src/core/implementations/postgres_storage.py`
-- **`PostgresStorage.upsert_page()`**: Stores page data
-  - Computes markdown checksum from Firecrawl markdown
-  - Stores `clean_text`, `raw_html`, `metadata`
-  - Tracks changes using `markdown_checksum` and `markdown_changed`
-  - Returns change flags for embedding decisions
-
-**Practical Outcome**: 
-- Website pages are fetched, parsed, and stored in PostgreSQL
-- Each page gets clean content for embeddings and rich markdown for display
-- Change detection prevents redundant processing
-
-### 2. Embedder Execution (`python -m src.embedder.embedder`)
-
-**Entry Point**: `src/embedder/embedder.py`
-- **`Embedder.run()`**: Main orchestration method
-  - Queries database for pages needing embedding
-  - Processes pages with progress tracking
-  - Generates both page-level and chunk-level embeddings
-
-**Target Selection**: `src/embedder/embedder.py`
-- **`Embedder.get_targets()`**: SQL query for pages needing embedding
-
-**Model Loading**: `src/embedder/embedder.py`
-- **`SentenceTransformer("BAAI/bge-large-en-v1.5")`**: Loads 1024-dim model
-- Downloads model on first run (~1.5GB)
-- Caches model for subsequent runs
-
-**Text Chunking**: `src/embedder/chunker.py`
-- **`TextChunker.chunk_text()`**: Splits content into chunks
-  - Uses sentence boundaries and token limits (see config)
-  - Preserves semantic coherence within chunks
-  - Returns list of text chunks for embedding
-
-**Embedding Generation**: `src/embedder/embedder.py`
-- **`Embedder.embed_page()`**: Creates embeddings for single page
-  - **Page-level**: Encodes entire `clean_text` → `summary_vec`
-  - **Chunk-level**: Encodes each chunk → `chunks.vec`
-  - Uses `normalize_embeddings=True` for cosine similarity
-  - Stores 1024-dimensional vectors in PostgreSQL
-
-**Database Storage**: `src/embedder/embedder.py`
-- **Page embeddings**: Updates `pages.summary_vec` and `embedded_at`
-- **Chunk embeddings**: Bulk insert into `chunks` table
-  - Uses `execute_values()` for efficient bulk operations
-  - Stores `(page_url, chunk_index, text, vec)` tuples
-
-**Practical Outcome**:
-- Clean text content is converted to high-dimensional vectors
-- Both page-level and chunk-level embeddings enable flexible search
-- Embeddings are optimized for semantic similarity via cosine distance
-
-### 3. Semantic Search Execution (`python -m src.search.semantic "query"`)
-
-**Entry Point**: `src/search/__main__.py`
-- Parses command line query
-- Initializes search with configuration
-- Executes search and formats results
-
-**Search Engine**: `src/search/semantic.py`
-- **`SemanticSearch.__init__()`**: Loads BGE-Large-EN model
-  - Same model as embedder for consistency
-  - Establishes database connection
-
-**Query Processing**: `src/search/semantic.py`
-- **`SemanticSearch.search()`**: Main search method
-  - Encodes query using same BGE-Large-EN model
-  - Normalizes query vector for cosine similarity
-  - Sets HNSW search parameters (`ef_search`)
-
-**Vector Search**: `src/search/semantic.py`
-- **SQL Query**: Performs similarity search using pgvector
-- **HNSW Index**: Fast approximate nearest neighbor search
-- **Cosine Distance**: `<=>` operator computes 1 - cosine_similarity
-- **Score Range**: 0.0 (dissimilar) to 1.0 (identical)
-
-**Result Formatting**: `src/search/semantic.py`
-- **`SemanticSearch.format_results()`**: Formats search results
-  - Ranks results by similarity score
-  - Shows URL, score, and content preview (300 chars)
-  - Returns formatted string for display
-
-**Practical Outcome**:
-- Natural language queries find semantically similar content
-- Results ranked by relevance score (higher = more relevant)
-- Content previews help users understand match quality
-- Fast response times via HNSW indexing
-
-## 🛠️ Technology Stack
-
-- **Web Scraping**: Firecrawl (local server)
-- **Content Processing**: Firecrawl
-- **Embeddings**: BAAI/bge-large-en-v1.5
-- **Database**: PostgreSQL + pgvector
-- **Search**: HNSW approximate nearest neighbor
-- **Async Framework**: aiohttp
-
-## 📦 Installation
+## 📦 Installation & Setup
 
 ### Prerequisites
 
-1. **Firecrawl Server** (running on port 3002):
-   ```bash
-   firecrawl serve --port 3002
-   ```
+1. **Docker and Docker Compose** (for database and Firecrawl)
+2. **Python 3.8+** with virtual environment support
+3. **Git** for cloning the repository
 
-2. **PostgreSQL with pgvector**:
-   ```bash
-   docker-compose up -d
-   ```
+### Step 1: Clone and Setup Python Environment
 
-3. **Python Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+git clone <repository-url>
+cd webscraper
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-### Database Setup
+### Step 2: Start All Services with Docker
+
+#### Option A: Start Services Individually
+
+**Start Firecrawl Server:**
+```bash
+# Navigate to the crawler directory (adjust path as needed)
+cd ../crawler/firecrawl
+docker-compose up -d
+
+# Verify Firecrawl containers are running
+docker ps --filter "name=firecrawl"
+# Should show: firecrawl-api-1, firecrawl-playwright-service-1, firecrawl-redis-1, firecrawl-worker-1
+```
+
+**Start PostgreSQL Database:**
+```bash
+# Return to webscraper directory
+cd ../../webscraper
+
+# Start the database
+docker-compose up -d db
+
+# Verify database is running
+docker ps --filter "name=rag_db"
+# Should show: rag_db (PostgreSQL with pgvector)
+```
+
+#### Option B: Start All Services at Once
+
+Create a convenience script to start everything:
+
+```bash
+# Create a start-services.sh script
+cat > start-services.sh << 'EOF'
+#!/bin/bash
+echo "🚀 Starting all webscraper services..."
+
+# Start Firecrawl
+echo "📡 Starting Firecrawl..."
+cd ../crawler/firecrawl
+docker-compose up -d
+
+# Start PostgreSQL
+echo "🗄️  Starting PostgreSQL..."
+cd ../../webscraper
+docker-compose up -d db
+
+# Wait for services to be ready
+echo "⏳ Waiting for services to be ready..."
+sleep 10
+
+# Check status
+echo "📊 Service Status:"
+docker ps --filter "name=firecrawl" --filter "name=rag_db"
+
+echo "✅ All services started!"
+echo "🌐 Firecrawl API: http://localhost:3002"
+echo "🗄️  PostgreSQL: localhost:5432"
+EOF
+
+chmod +x start-services.sh
+./start-services.sh
+```
+
+#### Option C: Using Docker Compose Override (Advanced)
+
+Create a `docker-compose.override.yml` to start both services from the webscraper directory:
+
+```bash
+# Create docker-compose.override.yml
+cat > docker-compose.override.yml << 'EOF'
+version: "3.9"
+services:
+  firecrawl-api:
+    image: ghcr.io/mendableai/firecrawl:latest
+    ports:
+      - "3002:3002"
+    environment:
+      - REDIS_URL=redis://firecrawl-redis:6379
+      - PLAYWRIGHT_MICROSERVICE_URL=http://firecrawl-playwright:3000/scrape
+    depends_on:
+      - firecrawl-redis
+      - firecrawl-playwright
+
+  firecrawl-playwright:
+    image: ghcr.io/mendableai/playwright-service:latest
+    environment:
+      - PORT=3000
+
+  firecrawl-redis:
+    image: redis:alpine
+    command: redis-server --bind 0.0.0.0
+
+  firecrawl-worker:
+    image: ghcr.io/mendableai/firecrawl:latest
+    environment:
+      - REDIS_URL=redis://firecrawl-redis:6379
+      - PLAYWRIGHT_MICROSERVICE_URL=http://firecrawl-playwright:3000/scrape
+    depends_on:
+      - firecrawl-redis
+      - firecrawl-playwright
+    command: ["pnpm", "run", "workers"]
+EOF
+
+# Start everything with one command
+docker-compose up -d
+```
+
+### Step 3: Verify Services Are Running
+
+```bash
+# Check all containers
+docker ps
+
+# Expected output should show:
+# - firecrawl-api-1 (port 3002)
+# - firecrawl-playwright-service-1
+# - firecrawl-redis-1
+# - firecrawl-worker-1
+# - rag_db (port 5432)
+
+# Test Firecrawl API
+curl -X POST http://localhost:3002/v1/scrape \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","formats":["html","markdown","links"]}'
+
+# Test database connection
+python -c "import psycopg2; conn = psycopg2.connect(dbname='rag', user='postgres', password='postgres', host='localhost'); print('✅ Database connected!')"
+```
+
+### Step 4: Initialize Database
 
 ```bash
 python -m src.scripts.init_db
 ```
 
+### Step 5: Test the Setup
+
+Run the integration test to verify everything is working:
+
+```bash
+python test_firecrawl_integration.py
+```
+
+Expected output:
+```
+🚀 Starting Firecrawl integration tests...
+
+Testing Firecrawl API directly...
+POSTing to http://localhost:3002/v1/scrape...
+✅ Scrape completed successfully!
+
+==================================================
+Testing FirecrawlFetcher integration...
+✅ Crawl completed successfully!
+
+🎉 All tests passed! Firecrawl integration is working correctly.
+```
+
+## 🛠️ Docker Management Commands
+
+### Start Services
+```bash
+# Start Firecrawl
+cd ../crawler/firecrawl && docker-compose up -d
+
+# Start PostgreSQL
+cd ../../webscraper && docker-compose up -d db
+
+# Or use the convenience script
+./start-services.sh
+```
+
+### Stop Services
+```bash
+# Stop Firecrawl
+cd ../crawler/firecrawl && docker-compose down
+
+# Stop PostgreSQL
+cd ../../webscraper && docker-compose down
+
+# Stop all services
+docker-compose down
+```
+
+### Check Service Status
+```bash
+# Check running containers
+docker ps
+
+# Check Firecrawl logs
+cd ../crawler/firecrawl && docker-compose logs -f api
+
+# Check database logs
+docker-compose logs -f db
+```
+
+### Restart Services
+```bash
+# Restart Firecrawl
+cd ../crawler/firecrawl && docker-compose restart
+
+# Restart PostgreSQL
+cd ../../webscraper && docker-compose restart db
+
+# Restart everything
+./start-services.sh
+```
+
+### Clean Up (if needed)
+```bash
+# Stop and remove all containers
+docker-compose down
+
+# Remove volumes (WARNING: This will delete all data)
+docker-compose down -v
+
+# Remove all unused containers, networks, and images
+docker system prune -a
+```
+
 ## 🚀 Quick Start
 
-### 1. Crawl a Website
+### 1. Test the Setup
+
+Run the integration test to verify everything is working:
+
+```bash
+python test_firecrawl_integration.py
+```
+
+Expected output:
+```
+🚀 Starting Firecrawl integration tests...
+
+Testing Firecrawl API directly...
+POSTing to http://localhost:3002/v1/scrape...
+✅ Scrape completed successfully!
+
+==================================================
+Testing FirecrawlFetcher integration...
+✅ Crawl completed successfully!
+
+🎉 All tests passed! Firecrawl integration is working correctly.
+```
+
+### 2. Crawl a Website
 
 ```bash
 python -m src.crawler.crawler https://aezion.com
 ```
 
-### 2. Generate Embeddings
+**Expected Output**: The crawler should process multiple pages (not just 1):
+```
+INFO: Starting crawl from https://aezion.com
+INFO: Processing 1 URLs at depth 0
+INFO: Using 28 same-domain links from Firecrawl for https://www.aezion.com (filtered from 32 total)
+INFO: Added 27 new URLs to frontier from https://www.aezion.com
+...
+INFO: Crawl complete. Total pages processed: 174
+```
+
+### 3. Generate Embeddings
 
 ```bash
 python -m src.embedder.embedder
 ```
 
-### 3. Search Content
+### 4. Search Content
 
 ```bash
 python -m src.search.semantic "custom software development services"
 ```
-
-## 📊 Performance
-
-- **Crawling**: 8 concurrent requests, 0.2s rate limit
-- **Embeddings**: 1024-dimensional vectors
-- **Search**: HNSW index for O(log n) similarity search
-- **Storage**: Efficient bulk operations with pgvector
 
 ## 🔧 Configuration
 
@@ -216,6 +337,66 @@ SEARCH_CONFIG = {
     "ef_search": 200,                  # HNSW search precision
 }
 ```
+
+## 🛠️ Troubleshooting
+
+### Common Issues
+
+#### 1. "Connection refused" to Firecrawl API
+**Error**: `Cannot connect to host localhost:3002`
+**Solution**: 
+```bash
+cd ../crawler/firecrawl
+docker-compose up -d
+```
+
+#### 2. "Connection refused" to PostgreSQL
+**Error**: `connection to server at "localhost" (::1), port 5432 failed`
+**Solution**:
+```bash
+docker-compose up -d db
+```
+
+#### 3. Only 1 page crawled instead of many
+**Issue**: Crawler only processes homepage
+**Cause**: Domain matching issue (aezion.com vs www.aezion.com)
+**Status**: ✅ **Fixed** - The crawler now handles www/non-www variations automatically
+
+#### 4. "Invalid string" errors from Firecrawl API
+**Error**: `Firecrawl API error 400 for javascript:void(0): {"error":"Bad Request","details":[{"code":"invalid_string"}]}`
+**Cause**: Non-HTTP(S) URLs being sent to Firecrawl
+**Status**: ✅ **Fixed** - The crawler now filters out javascript:, tel:, mailto: links before sending to Firecrawl
+
+#### 5. ModuleNotFoundError for aiohttp
+**Error**: `ModuleNotFoundError: No module named 'aiohttp'`
+**Solution**:
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Verification Commands
+
+Check if services are running:
+```bash
+# Check Docker containers
+docker ps
+
+# Test Firecrawl API directly
+curl -X POST http://localhost:3002/v1/scrape \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","formats":["html","markdown","links"]}'
+
+# Test database connection
+python -c "import psycopg2; conn = psycopg2.connect(dbname='rag', user='postgres', password='postgres', host='localhost'); print('Database connected!')"
+```
+
+## 📊 Performance
+
+- **Crawling**: 8 concurrent requests, 0.2s rate limit
+- **Embeddings**: 1024-dimensional vectors
+- **Search**: HNSW index for O(log n) similarity search
+- **Storage**: Efficient bulk operations with pgvector
 
 ## 📚 Documentation
 

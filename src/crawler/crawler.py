@@ -104,6 +104,56 @@ class Crawler:
         ).geturl().rstrip("/")  # Remove trailing slash
 
     @staticmethod
+    def is_same_domain(url1: str, url2: str) -> bool:
+        """
+        Check if two URLs are on the same domain, treating www and non-www as the same.
+        
+        Args:
+            url1: First URL to compare
+            url2: Second URL to compare
+            
+        Returns:
+            True if both URLs are on the same domain
+            
+        Example:
+            >>> Crawler.is_same_domain("https://aezion.com/page", "https://www.aezion.com/other")
+            True
+            >>> Crawler.is_same_domain("https://aezion.com/page", "https://other.com/page")
+            False
+        """
+        def strip_www(netloc: str) -> str:
+            """Remove www. prefix from domain if present."""
+            return netloc.lower().lstrip('www.')
+        
+        try:
+            domain1 = strip_www(urlparse(url1).netloc)
+            domain2 = strip_www(urlparse(url2).netloc)
+            return domain1 == domain2
+        except Exception:
+            return False
+
+    @staticmethod
+    def is_crawlable_url(url: str) -> bool:
+        """
+        Check if a URL is crawlable (valid HTTP/HTTPS URL).
+        
+        Args:
+            url: The URL to check
+            
+        Returns:
+            True if the URL is crawlable
+            
+        Example:
+            >>> Crawler.is_crawlable_url("https://example.com/page")
+            True
+            >>> Crawler.is_crawlable_url("javascript:void(0)")
+            False
+            >>> Crawler.is_crawlable_url("tel:+1234567890")
+            False
+        """
+        return url.startswith("http://") or url.startswith("https://")
+
+    @staticmethod
     def same_domain_links(base: str, html: str) -> List[str]:
         """
         Extract and canonicalize links from HTML that are on the same domain.
@@ -212,13 +262,17 @@ class Crawler:
             # Use links from Firecrawl if available, otherwise extract from HTML
             if fetch_result.extra and "links" in fetch_result.extra:
                 firecrawl_links = fetch_result.extra["links"]
-                # Filter Firecrawl links to same domain
-                base_domain = urlparse(url).netloc
+                # Filter Firecrawl links to same domain and ensure they're crawlable
                 new_links = []
                 for link in firecrawl_links:
                     try:
+                        # Skip non-crawlable URLs (javascript:, tel:, mailto:, etc.)
+                        if not self.is_crawlable_url(link):
+                            logger.debug(f"Skipping non-crawlable Firecrawl link: {link}")
+                            continue
+                        
                         canonical_link = self.canonical(link)
-                        if urlparse(canonical_link).netloc == base_domain:
+                        if self.is_same_domain(canonical_link, url):
                             new_links.append(canonical_link)
                         else:
                             logger.debug(f"Skipping external Firecrawl link: {canonical_link}")
