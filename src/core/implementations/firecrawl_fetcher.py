@@ -1,3 +1,4 @@
+
 """
 Firecrawl-backed implementation of the Fetcher interface.
 
@@ -65,7 +66,6 @@ class FirecrawlFetcher(Fetcher):
                 "url": url,
                 "formats": ["html", "markdown", "links"],
                 "onlyMainContent": False,  # Changed to False to get more comprehensive content
-                "excludeTags": ["img", "video"],
                 "fastMode": False,
                 "waitFor": 0,
                 "mobile": False,
@@ -130,13 +130,18 @@ class FirecrawlFetcher(Fetcher):
             links = data.get("links", [])
             metadata = data.get("metadata", {})
             
-            # Pack markdown, links, and metadata into FetchResult.extra for the parser
+            # Pack the full Firecrawl response data into FetchResult.extra for the parser
             return FetchResult(
                 url          = url,
                 content      = html,
                 status_code  = 200,
                 content_type = "text/html",
-                extra        = {"markdown": markdown, "links": links, "metadata": metadata},
+                extra        = {
+                    "markdown": markdown, 
+                    "links": links, 
+                    "metadata": metadata,
+                    "full_firecrawl_response": data  # Store the complete response
+                },
             )
             
         except Exception as e:

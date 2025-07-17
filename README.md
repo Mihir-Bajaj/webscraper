@@ -178,25 +178,50 @@ python -c "import psycopg2; conn = psycopg2.connect(dbname='rag', user='postgres
 python -m src.scripts.init_db
 ```
 
-### Step 5: Test the Setup
-
-Run the integration test to verify everything is working:
+### Step 5: Initialize Database
 
 ```bash
-python test_firecrawl_integration.py
+# Initialize the database schema
+python db_utils.py init
+
+# Check database status
+python db_utils.py status
+```
+
+### Step 6: Test the Setup
+
+Run the comprehensive test suite:
+
+```bash
+python test_system.py
 ```
 
 Expected output:
 ```
-🚀 Starting Firecrawl integration tests...
+🚀 Starting comprehensive system test...
 
-Testing Firecrawl API directly...
-POSTing to http://localhost:3002/v1/scrape...
-✅ Scrape completed successfully!
+🔍 Testing Firecrawl API...
+✅ Firecrawl API working correctly
 
+🗄️  Testing database connection...
+✅ Database connection successful
+
+📊 Testing metadata storage...
+✅ Full Firecrawl response found in metadata
+
+🔍 Testing search functionality...
+✅ Search functionality working
+
+📊 Test Results:
 ==================================================
-Testing FirecrawlFetcher integration...
-✅ Crawl completed successfully!
+   Firecrawl API: ✅ PASS
+   Database Connection: ✅ PASS
+   Metadata Storage: ✅ PASS
+   Search Functionality: ✅ PASS
+
+🎉 All tests passed!
+✅ System is ready for use!
+```
 
 🎉 All tests passed! Firecrawl integration is working correctly.
 ```
@@ -315,6 +340,77 @@ python -m src.embedder.embedder
 ```bash
 python -m src.search.semantic "custom software development services"
 ```
+
+## 🗄️ Database
+
+### Schema
+
+The system uses PostgreSQL with pgvector for vector operations:
+
+```sql
+-- Main pages table
+CREATE TABLE pages (
+    url                 text PRIMARY KEY,           -- Unique URL identifier
+    title               text,                       -- Page title from HTML
+    clean_text          text,                       -- Cleaned content from Firecrawl
+    raw_html            text,                       -- Original HTML content
+    markdown_checksum   text,                       -- SHA256 hash of markdown content
+    markdown_changed    timestamptz,                -- When content last changed
+    metadata            jsonb,                      -- Complete Firecrawl response data
+    last_seen           timestamptz,                -- Last crawl timestamp
+    summary_vec         vector(1024),               -- Page-level embedding
+    embedded_at         timestamptz,                -- When embedding was created
+    category            varchar(20),                -- Page category (content, hubs, etc.)
+    category_confidence decimal(3,2)                -- Confidence in categorization
+);
+
+-- Text chunks for granular search
+CREATE TABLE chunks (
+    page_url    text REFERENCES pages(url) ON DELETE CASCADE,
+    chunk_index integer,
+    text        text,
+    vec         vector(1024),
+    PRIMARY KEY (page_url, chunk_index)
+);
+
+-- Keywords with embeddings
+CREATE TABLE keywords (
+    url         text REFERENCES pages(url) ON DELETE CASCADE,
+    phrase      text NOT NULL,
+    embedding   vector(1024)
+);
+```
+
+### Database Utilities
+
+Use `db_utils.py` for database operations:
+
+```bash
+# Check database status and statistics
+python db_utils.py status
+
+# Check metadata structure
+python db_utils.py metadata
+
+# Initialize database schema
+python db_utils.py init
+
+# Run all database checks
+python db_utils.py all
+```
+
+### pgAdmin Access
+
+Access pgAdmin at http://localhost:5050:
+- **Email**: admin@example.com
+- **Password**: admin
+
+**Connection Details:**
+- **Host**: rag_db
+- **Port**: 5432
+- **Database**: rag
+- **Username**: postgres
+- **Password**: postgres
 
 ## 🔧 Configuration
 

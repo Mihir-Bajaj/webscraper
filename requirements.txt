@@ -1,0 +1,16 @@
+# Core dependencies
+aiohttp>=3.8.0
+beautifulsoup4>=4.9.0
+psycopg2-binary>=2.9.0
+readability-lxml>=0.8.1
+
+# For HTML parsing
+bs4>=4.9.0
+
+# For local summarization models
+transformers>=4.30.0
+torch>=2.0.0
+sentencepiece>=0.1.99
+
+# Optional: For better performance with GPU
+# torch>=2.0.0+cu118  # If you have CUDA 11.8 

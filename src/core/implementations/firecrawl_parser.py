@@ -32,8 +32,15 @@ from readability import Document
 from bs4 import BeautifulSoup
 from src.core.interfaces.parser import Parser, PageAssets
 from src.core.interfaces.fetcher import FetchResult
+from src.core.implementations.page_categorizer import PageCategorizer
+
 
 class FirecrawlParser(Parser):
+    def __init__(self, enable_categorization: bool = True):
+        self.enable_categorization = enable_categorization
+        if enable_categorization:
+            self.categorizer = PageCategorizer()
+
     def parse(self, url: str, html: str, extra: dict | None = None) -> PageAssets:
         if extra is None or "markdown" not in extra:
             raise ValueError("FirecrawlParser expects markdown in FetchResult.extra")
@@ -41,6 +48,7 @@ class FirecrawlParser(Parser):
         markdown = extra["markdown"]
         links = extra.get("links", [])
         metadata = extra.get("metadata", {})
+        full_response = extra.get("full_firecrawl_response", {})
         
         # Extract title from Firecrawl metadata first (most reliable)
         title = ""
@@ -75,13 +83,32 @@ class FirecrawlParser(Parser):
             # Fallback to markdown if readability fails
             clean_text = self._markdown_to_clean_text(markdown)
         
+        # Add page URL and title at the beginning to make content unique
+        if clean_text:
+            page_info = f"Page URL: {url}\nPage Title: {title}\n\n"
+            clean_text = page_info + clean_text
+        
+        # Categorize the page if enabled
+        category_info = {}
+        if self.enable_categorization:
+            category_match = self.categorizer.categorize_page(url, title, markdown)
+            category_info = {
+                "category": category_match.category,
+                "confidence": category_match.confidence,
+                "description": self.categorizer.get_category_description(category_match.category),
+                "matched_patterns": category_match.matched_patterns,
+                "matched_keywords": category_match.matched_keywords
+            }
+        
         # Store links and other metadata in seo_head as JSON
         metadata_dict = {
             "links": links,
             "source": "firecrawl",
             "content_type": "markdown",
             "firecrawl_metadata": metadata,  # Store the full Firecrawl metadata
-            "markdown": markdown  # Store the original markdown for LLM usage
+            "full_firecrawl_response": full_response,  # Store the complete Firecrawl response
+            "markdown": markdown,  # Store the original markdown for LLM usage
+            "category_info": category_info  # Store categorization results
         }
         seo_head = json.dumps(metadata_dict)
         

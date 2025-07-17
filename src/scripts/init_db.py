@@ -54,6 +54,14 @@ def init_db():
         """
     )
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS keywords (
+            url TEXT REFERENCES pages(url) ON DELETE CASCADE,
+            phrase TEXT NOT NULL,
+            embedding VECTOR(1024)
+        )
+        """
+    )
     conn.commit()
     cur.close()
     conn.close()
