@@ -28,11 +28,12 @@ Example:
 
 from __future__ import annotations
 import aiohttp, asyncio
+import os
 from typing import Any, Dict
 from src.core.interfaces.fetcher import Fetcher, FetchResult
 
-# Default Firecrawl URL - can be overridden via set_firecrawl_url()
-FIRECRAWL_URL = "http://localhost:3002/v1"
+# Default Firecrawl URL - can be overridden via environment variable or set_firecrawl_url()
+FIRECRAWL_URL = os.getenv("FIRECRAWL_URL", "http://localhost:3002/v1")
 
 class FirecrawlFetcher(Fetcher):
     def __init__(self, session: aiohttp.ClientSession, poll_delay: float = 1.0, max_retries: int = 3, rate_limit: float = 0.2):
@@ -89,21 +90,17 @@ class FirecrawlFetcher(Fetcher):
                                 return response.get("data", {})
                             else:
                                 error_msg = response.get('error', 'Unknown error')
-                                print(f"Firecrawl API failed for {url}: {error_msg}")
                                 if attempt < self._max_retries - 1:
                                     await asyncio.sleep(2 ** attempt)  # Exponential backoff
                                     continue
                                 raise Exception(f"Firecrawl API failed: {error_msg}")
                         else:
-                            error_text = await r.text()
-                            print(f"Firecrawl API error {r.status} for {url}: {error_text}")
                             if attempt < self._max_retries - 1:
                                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
                                 continue
-                            raise Exception(f"Firecrawl API error {r.status}: {error_text}")
+                            raise Exception(f"Firecrawl API error {r.status}")
                             
                 except asyncio.TimeoutError:
-                    print(f"Timeout on attempt {attempt + 1} for {url}")
                     if attempt < self._max_retries - 1:
                         await asyncio.sleep(2 ** attempt)  # Exponential backoff
                         continue
@@ -112,7 +109,6 @@ class FirecrawlFetcher(Fetcher):
                         
                 except Exception as e:
                     if attempt < self._max_retries - 1:
-                        print(f"Attempt {attempt + 1} failed for {url}: {e}")
                         await asyncio.sleep(2 ** attempt)  # Exponential backoff
                         continue
                     else:

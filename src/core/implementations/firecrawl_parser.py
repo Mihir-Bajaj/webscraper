@@ -1,12 +1,12 @@
 """
-Hybrid Firecrawl + Readability parser implementation.
+Hybrid Firecrawl + Trafilatura parser implementation.
 
 This module implements a hybrid parsing approach that combines:
 1. Firecrawl for web scraping and markdown generation
-2. Readability for accurate content extraction and stable checksums
+2. Trafilatura for accurate content extraction and stable checksums
 
 The parser uses Firecrawl to fetch pages and generate markdown, but then
-uses Readability on the raw HTML to extract clean, stable content for
+uses Trafilatura on the raw HTML to extract clean, stable content for
 embedding and change detection. This approach provides:
 - High-quality markdown for display and metadata
 - Stable content extraction for reliable change detection
@@ -20,7 +20,7 @@ Example:
         "<html>...</html>",
         {"markdown": "# Example\n\nContent", "links": ["https://example.com/about"]}
     )
-    print(assets.clean_text)  # Clean content from Readability
+    print(assets.clean_text)  # Clean content from Trafilatura
     print(assets.seo_head)    # Markdown from Firecrawl
     ```
 """
@@ -28,18 +28,16 @@ Example:
 import hashlib
 import json
 import re
-from readability import Document
+import trafilatura
 from bs4 import BeautifulSoup
 from src.core.interfaces.parser import Parser, PageAssets
 from src.core.interfaces.fetcher import FetchResult
-from src.core.implementations.page_categorizer import PageCategorizer
+
 
 
 class FirecrawlParser(Parser):
-    def __init__(self, enable_categorization: bool = True):
+    def __init__(self, enable_categorization: bool = False):
         self.enable_categorization = enable_categorization
-        if enable_categorization:
-            self.categorizer = PageCategorizer()
 
     def parse(self, url: str, html: str, extra: dict | None = None) -> PageAssets:
         if extra is None or "markdown" not in extra:
@@ -63,24 +61,51 @@ class FirecrawlParser(Parser):
                     title = line[2:].strip()
                     break
         
-        # If still no title, try to extract from HTML using readability
+        # If still no title, try to extract from HTML using trafilatura
         if not title:
             try:
-                title = Document(html).short_title().strip()
+                # Extract title using trafilatura
+                extracted_title = trafilatura.extract_metadata(html, title_only=True)
+                if extracted_title:
+                    title = extracted_title.strip()
             except:
                 title = ""
         
-        # Use Readability to extract clean text from the HTML (more accurate than markdown processing)
+        # If still no title, use the URL as fallback
+        if not title:
+            title = url
+        
+        # Use trafilatura to extract clean text from the HTML (more accurate than markdown processing)
         try:
-            # Extract main content using readability
-            main_html = Document(html).summary()
-            soup_body = BeautifulSoup(main_html, "lxml")
-            clean_text = soup_body.get_text(" ", strip=True)
+            # Extract main content using trafilatura (same approach as clean.py)
+            extracted_text = trafilatura.extract(html, 
+                                               include_comments=False,
+                                               include_tables=False,
+                                               no_fallback=False,
+                                               output_format='txt')
             
-            # Normalize whitespace
-            clean_text = re.sub(r"\s+", " ", clean_text).strip()
+            if extracted_text:
+                # Clean up the extracted text (following clean.py approach)
+                lines = extracted_text.split('\n')
+                cleaned_lines = []
+                
+                for line in lines:
+                    line = line.strip()
+                    if line and len(line) >= 50:  # MIN_CHARS from clean.py
+                        # Remove any remaining markdown artifacts
+                        line = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', line)  # Remove links
+                        line = re.sub(r'!\[[^\]]*\]\([^)]+\)', '', line)      # Remove images
+                        line = re.sub(r'={3,}|-{3,}', '', line)               # Remove horizontal rules
+                        
+                        if line and len(line) >= 50:
+                            cleaned_lines.append(line)
+                
+                clean_text = '\n\n'.join(cleaned_lines)
+            else:
+                # Fallback to markdown if trafilatura fails
+                clean_text = self._markdown_to_clean_text(markdown)
         except Exception as e:
-            # Fallback to markdown if readability fails
+            # Fallback to markdown if trafilatura fails
             clean_text = self._markdown_to_clean_text(markdown)
         
         # Add page URL and title at the beginning to make content unique
@@ -90,15 +115,6 @@ class FirecrawlParser(Parser):
         
         # Categorize the page if enabled
         category_info = {}
-        if self.enable_categorization:
-            category_match = self.categorizer.categorize_page(url, title, markdown)
-            category_info = {
-                "category": category_match.category,
-                "confidence": category_match.confidence,
-                "description": self.categorizer.get_category_description(category_match.category),
-                "matched_patterns": category_match.matched_patterns,
-                "matched_keywords": category_match.matched_keywords
-            }
         
         # Store links and other metadata in seo_head as JSON
         metadata_dict = {
@@ -112,7 +128,7 @@ class FirecrawlParser(Parser):
         }
         seo_head = json.dumps(metadata_dict)
         
-        # Use clean_text for checksum (from readability, more stable)
+        # Use clean_text for checksum (from trafilatura, more stable)
         checksum = hashlib.sha256(clean_text.encode()).hexdigest()
 
         return PageAssets(

@@ -25,19 +25,26 @@ from urllib.parse import urljoin, urlparse, urldefrag  # Tools for URL handling
 from bs4 import BeautifulSoup  # Library for parsing HTML
 import logging  # For logging messages and errors
 import aiohttp
+import importlib
 
 # Importing configuration from settings file
 from src.config.settings import (
-    FETCHER_CLS,  # Class that handles fetching web pages
-    PARSER_CLS,   # Class that parses HTML content
-    STORAGE_CLS,  # Class that stores crawled data
-    DB_CONFIG,    # Database configuration
+    FETCHER_CLS_NAME,  # Class name for fetching web pages
+    PARSER_CLS_NAME,   # Class name for parsing HTML content
+    STORAGE_CLS_NAME,  # Class name for storing crawled data
+    REST_API_CONFIG,  # REST API configuration
     CRAWLER_CONFIG,  # Crawler settings like depth and concurrency
 )
 
 # Setting up logging to track what the crawler is doing
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def get_class_from_name(class_name: str):
+    """Dynamically import a class from its full name"""
+    module_name, class_name = class_name.rsplit('.', 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, class_name)
 
 class Crawler:
     """
@@ -61,12 +68,12 @@ class Crawler:
         """
         Initialize the crawler with its components and data structures.
         
-        The crawler is configured using settings from CRAWLER_CONFIG and DB_CONFIG.
+        The crawler is configured using settings from CRAWLER_CONFIG and REST_API_CONFIG.
         """
         # Initialize the crawler components
-        self.fetcher_cls = FETCHER_CLS  # Store fetcher class for dynamic instantiation
-        self.parser = PARSER_CLS()  # Parses HTML content
-        self.store = STORAGE_CLS(DB_CONFIG)  # Stores crawled data
+        self.fetcher_cls = get_class_from_name(FETCHER_CLS_NAME)  # Store fetcher class for dynamic instantiation
+        self.parser = get_class_from_name(PARSER_CLS_NAME)()  # Parses HTML content
+        self.store = get_class_from_name(STORAGE_CLS_NAME)(REST_API_CONFIG)  # Stores crawled data via REST API
         self.frontier: Set[str] = set()  # Set of URLs waiting to be processed
         self.depth_map: Dict[str, int] = {}  # Maps URLs to their depth in the crawl
         self.processed: Set[str] = set()  # Set of URLs that have been processed
@@ -80,7 +87,8 @@ class Crawler:
         1. Converts the domain to lowercase
         2. Removes URL fragments (parts after #)
         3. Removes trailing slashes
-        4. Preserves query parameters
+        4. Normalizes query parameters (sorts them for consistency)
+        5. Handles www vs non-www domains consistently
         
         Args:
             url: The URL to canonicalize
@@ -93,15 +101,42 @@ class Crawler:
             'https://example.com/page?param=value'
             >>> Crawler.canonical("https://example.com/page/")
             'https://example.com/page'
+            >>> Crawler.canonical("https://www.aezion.com/blogs/page/6/?et_blog")
+            'https://aezion.com/blogs/page/6?et_blog'
         """
-        # This makes different versions of the same URL look the same
-        # (e.g., example.com/ and example.com are treated as identical)
+        from urllib.parse import parse_qs, urlencode
+        
+        # Parse the URL
         u = urlparse(url)
-        # Keep query parameters as they might be important for some sites
-        return u._replace(
-            netloc=u.netloc.lower(),  # Convert domain to lowercase
+        
+        # Normalize domain (remove www prefix and convert to lowercase)
+        netloc = u.netloc.lower()
+        if netloc.startswith('www.'):
+            netloc = netloc[4:]  # Remove www prefix
+        
+        # Normalize query parameters
+        if u.query:
+            # Parse query parameters
+            query_params = parse_qs(u.query)
+            # Sort parameters for consistency
+            sorted_params = dict(sorted(query_params.items()))
+            # Rebuild query string
+            query = urlencode(sorted_params, doseq=True)
+        else:
+            query = ""
+        
+        # Build canonicalized URL
+        canonical_url = u._replace(
+            netloc=netloc,
+            query=query,
             fragment=""  # Remove the fragment (part after #)
-        ).geturl().rstrip("/")  # Remove trailing slash
+        ).geturl()
+        
+        # Remove trailing slash (except for root URLs)
+        if canonical_url != '/' and canonical_url != 'https://' and canonical_url != 'http://':
+            canonical_url = canonical_url.rstrip('/')
+        
+        return canonical_url
 
     @staticmethod
     def is_same_domain(url1: str, url2: str) -> bool:
@@ -190,7 +225,6 @@ class Crawler:
         
         # Find all links (<a> tags with href attribute)
         all_links = soup.find_all("a", href=True)
-        logger.info(f"Found {len(all_links)} total links on {base}")
         
         for a in all_links:
             # Remove the fragment from the href
@@ -208,15 +242,10 @@ class Crawler:
                 # Only keep links that are on the same domain
                 if urlparse(canonical_url).netloc == base_domain:
                     links.add(canonical_url)
-                    logger.debug(f"Found same-domain link: {canonical_url}")
-                else:
-                    logger.debug(f"Skipping external link: {canonical_url}")
             except Exception as e:
                 # Log any errors that occur during URL processing
-                logger.warning(f"Error processing link {href}: {e}")
                 continue
         
-        logger.info(f"Found {len(links)} unique same-domain links on {base}")
         return list(links)
 
     async def process_page(self, url: str, fetch_result, depth: int) -> None:
@@ -236,26 +265,22 @@ class Crawler:
         """
         # Skip if we couldn't fetch the page
         if fetch_result is None or fetch_result.error:
-            logger.warning(f"Failed to fetch {url}: {fetch_result.error if fetch_result else 'No result'}")
+            print(f"❌ FAIL {url}")
             return
 
-        logger.info(f"Processing page at depth {depth}: {url}")
-        
         # Use the parser to extract assets (text, images, etc.) from the page
         # Pass the extra data (markdown, links) to the parser
         assets = self.parser.parse(url, fetch_result.content, fetch_result.extra)
         # Store the page data and check if content or SEO elements changed
         content_changed, seo_changed = self.store.upsert_page(assets)
 
-        # Log status with symbols for content and SEO changes
-        status = []
-        if content_changed:
-            status.append("EMBD")  # Content/embedding changed
+        # Show simple pass/fail status
+        if content_changed or seo_changed:
+            print(f"✅ PASS {url}")
+        elif content_changed is False and seo_changed is False:
+            print(f"❌ FAIL {url} (storage failed)")
         else:
-            status.append("----")  # No content change
-        if seo_changed:
-            status.append("SEO")  # SEO elements changed
-        print(f"{' '.join(status):<8} {url}", flush=True)
+            print(f"✅ PASS {url} (no changes)")
 
         # Only look for new links if we haven't reached max depth
         if depth + 1 <= CRAWLER_CONFIG["max_depth"]:
@@ -268,33 +293,23 @@ class Crawler:
                     try:
                         # Skip non-crawlable URLs (javascript:, tel:, mailto:, etc.)
                         if not self.is_crawlable_url(link):
-                            logger.debug(f"Skipping non-crawlable Firecrawl link: {link}")
                             continue
                         
                         canonical_link = self.canonical(link)
                         if self.is_same_domain(canonical_link, url):
                             new_links.append(canonical_link)
-                        else:
-                            logger.debug(f"Skipping external Firecrawl link: {canonical_link}")
                     except Exception as e:
-                        logger.warning(f"Error processing Firecrawl link {link}: {e}")
                         continue
-                logger.info(f"Using {len(new_links)} same-domain links from Firecrawl for {url} (filtered from {len(firecrawl_links)} total)")
             else:
                 # Fallback to extracting links from HTML
                 new_links = self.same_domain_links(url, fetch_result.content)
-                logger.info(f"Extracted {len(new_links)} links from HTML for {url}")
             
-            added_count = 0
+            # Add new links to frontier
             for link in new_links:
                 # Only add to frontier if we haven't processed it yet and haven't seen it before
                 if link not in self.processed and link not in self.frontier:
                     self.frontier.add(link)
                     self.depth_map[link] = depth + 1
-                    added_count += 1
-                    logger.debug(f"Added to frontier: {link} at depth {depth + 1}")
-            
-            logger.info(f"Added {added_count} new URLs to frontier from {url}")
 
     async def _crawl_loop(self, fetcher, start_url: str) -> None:
         """
@@ -308,9 +323,8 @@ class Crawler:
         self.processed = set()  # URLs we've already processed
         current_depth = 0  # Start at depth 0
 
-        logger.info(f"Starting crawl from {start_url}")
-        logger.info(f"Max depth: {CRAWLER_CONFIG['max_depth']}")
-        logger.info(f"Max pages: {CRAWLER_CONFIG['max_pages']}")
+        print(f"🚀 Starting crawl: {start_url}")
+        print(f"📊 Max depth: {CRAWLER_CONFIG['max_depth']}, Max pages: {CRAWLER_CONFIG['max_pages']}\n")
 
         # Continue crawling until we run out of URLs, reach max depth, or process max pages
         while (self.frontier and 
@@ -321,14 +335,11 @@ class Crawler:
             batch = {url for url in self.frontier if self.depth_map[url] == current_depth}
             if not batch:
                 # If no URLs at current depth, move to next depth
-                logger.info(f"No more URLs at depth {current_depth}, moving to next depth")
                 current_depth += 1
                 continue
 
             # Remove batch URLs from the frontier
             self.frontier -= batch
-            logger.info(f"Processing {len(batch)} URLs at depth {current_depth}")
-            logger.info(f"Frontier size: {len(self.frontier)}, Total processed: {len(self.processed)}")
 
             # Fetch all URLs in the batch concurrently
             fetch_results = await asyncio.gather(*(fetcher.fetch(u) for u in batch))
@@ -337,21 +348,26 @@ class Crawler:
             for url, fetch_result in zip(batch, fetch_results):
                 if fetch_result is not None and not fetch_result.error:
                     await self.process_page(url, fetch_result, current_depth)
+                else:
+                    # Mark as failed if fetch failed
+                    print(f"❌ FAIL {url} (fetch failed)")
                 self.processed.add(url)  # Mark as processed regardless of fetch result
 
             # Wait before next batch (to be polite to servers)
             await asyncio.sleep(CRAWLER_CONFIG["crawl_delay"])
             
             # Print progress information
-            print(f"\nDepth {current_depth}: {len(self.frontier)} URLs in frontier, {len(self.processed)} URLs processed")
-            logger.info(f"Depth {current_depth} complete. Frontier: {len(self.frontier)}, Processed: {len(self.processed)}")
+            print(f"📈 Depth {current_depth}: {len(self.frontier)} pending, {len(self.processed)} processed")
 
             # Check if we need to move to the next depth
             if not any(self.depth_map[url] == current_depth for url in self.frontier):
                 current_depth += 1
-                logger.info(f"Moving to depth {current_depth}")
 
-        logger.info(f"Crawl complete. Total pages processed: {len(self.processed)}")
+        print(f"\n✅ Crawl complete: {len(self.processed)} pages processed")
+        
+        # Flush any remaining pages in the batch buffer
+        if hasattr(self.store, 'flush_all'):
+            self.store.flush_all()
 
     async def crawl(self, start_url: str) -> None:
         """

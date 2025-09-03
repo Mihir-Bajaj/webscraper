@@ -1,12 +1,12 @@
 # Webscraper - Modern Web Crawling & Semantic Search
 
-A high-performance web crawling and semantic search system that uses Firecrawl for robust scraping and content extraction, powered by BGE-Large-EN embeddings and PostgreSQL with pgvector.
+A high-performance web crawling and semantic search system that uses Firecrawl for robust scraping and content extraction, powered by BGE-Large-EN embeddings and external database API.
 
 ## 🚀 Features
 
 - **Firecrawl Parser**: Firecrawl (scraping + markdown + content extraction)
 - **High-Quality Embeddings**: BGE-Large-EN model (1024 dimensions)
-- **Vector Search**: PostgreSQL with pgvector and HNSW indexing
+- **Vector Search**: External database API with pgvector support
 - **Async Crawling**: High-performance concurrent web scraping
 - **Change Detection**: Intelligent content change tracking
 - **Semantic Search**: Natural language query understanding
@@ -17,9 +17,9 @@ A high-performance web crawling and semantic search system that uses Firecrawl f
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Firecrawl     │    │   BGE-Large-EN  │    │   PostgreSQL    │
-│   (Scraping &   │───▶│  (Embeddings)   │───▶│   + pgvector    │
-│   Extraction)   │    │   1024 dims     │    │   + HNSW Index  │
+│   Firecrawl     │    │   BGE-Large-EN  │    │   External      │
+│   (Scraping &   │───▶│  (Embeddings)   │───▶│   Database API  │
+│   Extraction)   │    │   1024 dims     │    │   + pgvector    │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
@@ -27,9 +27,10 @@ A high-performance web crawling and semantic search system that uses Firecrawl f
 
 ### Prerequisites
 
-1. **Docker and Docker Compose** (for database and Firecrawl)
+1. **Docker and Docker Compose** (for Firecrawl)
 2. **Python 3.8+** with virtual environment support
 3. **Git** for cloning the repository
+4. **External Database API** running on `localhost:4000`
 
 ### Step 1: Clone and Setup Python Environment
 
@@ -41,9 +42,7 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Step 2: Start All Services with Docker
-
-#### Option A: Start Services Individually
+### Step 2: Start Firecrawl Service
 
 **Start Firecrawl Server:**
 ```bash
@@ -56,101 +55,22 @@ docker ps --filter "name=firecrawl"
 # Should show: firecrawl-api-1, firecrawl-playwright-service-1, firecrawl-redis-1, firecrawl-worker-1
 ```
 
-**Start PostgreSQL Database:**
+### Step 3: Start Webscraper API
+
+**Start the Webscraper API:**
 ```bash
 # Return to webscraper directory
 cd ../../webscraper
 
-# Start the database
-docker-compose up -d db
+# Start the webscraper API
+docker-compose -f api/host/docker-compose.yml up -d
 
-# Verify database is running
-docker ps --filter "name=rag_db"
-# Should show: rag_db (PostgreSQL with pgvector)
+# Verify webscraper API is running
+docker ps --filter "name=webscraper"
+# Should show: webscraper-api (port 8000)
 ```
 
-#### Option B: Start All Services at Once
-
-Create a convenience script to start everything:
-
-```bash
-# Create a start-services.sh script
-cat > start-services.sh << 'EOF'
-#!/bin/bash
-echo "🚀 Starting all webscraper services..."
-
-# Start Firecrawl
-echo "📡 Starting Firecrawl..."
-cd ../crawler/firecrawl
-docker-compose up -d
-
-# Start PostgreSQL
-echo "🗄️  Starting PostgreSQL..."
-cd ../../webscraper
-docker-compose up -d db
-
-# Wait for services to be ready
-echo "⏳ Waiting for services to be ready..."
-sleep 10
-
-# Check status
-echo "📊 Service Status:"
-docker ps --filter "name=firecrawl" --filter "name=rag_db"
-
-echo "✅ All services started!"
-echo "🌐 Firecrawl API: http://localhost:3002"
-echo "🗄️  PostgreSQL: localhost:5432"
-EOF
-
-chmod +x start-services.sh
-./start-services.sh
-```
-
-#### Option C: Using Docker Compose Override (Advanced)
-
-Create a `docker-compose.override.yml` to start both services from the webscraper directory:
-
-```bash
-# Create docker-compose.override.yml
-cat > docker-compose.override.yml << 'EOF'
-version: "3.9"
-services:
-  firecrawl-api:
-    image: ghcr.io/mendableai/firecrawl:latest
-    ports:
-      - "3002:3002"
-    environment:
-      - REDIS_URL=redis://firecrawl-redis:6379
-      - PLAYWRIGHT_MICROSERVICE_URL=http://firecrawl-playwright:3000/scrape
-    depends_on:
-      - firecrawl-redis
-      - firecrawl-playwright
-
-  firecrawl-playwright:
-    image: ghcr.io/mendableai/playwright-service:latest
-    environment:
-      - PORT=3000
-
-  firecrawl-redis:
-    image: redis:alpine
-    command: redis-server --bind 0.0.0.0
-
-  firecrawl-worker:
-    image: ghcr.io/mendableai/firecrawl:latest
-    environment:
-      - REDIS_URL=redis://firecrawl-redis:6379
-      - PLAYWRIGHT_MICROSERVICE_URL=http://firecrawl-playwright:3000/scrape
-    depends_on:
-      - firecrawl-redis
-      - firecrawl-playwright
-    command: ["pnpm", "run", "workers"]
-EOF
-
-# Start everything with one command
-docker-compose up -d
-```
-
-### Step 3: Verify Services Are Running
+### Step 4: Verify Services Are Running
 
 ```bash
 # Check all containers
@@ -161,39 +81,25 @@ docker ps
 # - firecrawl-playwright-service-1
 # - firecrawl-redis-1
 # - firecrawl-worker-1
-# - rag_db (port 5432)
+# - webscraper-api (port 8000)
 
 # Test Firecrawl API
 curl -X POST http://localhost:3002/v1/scrape \
   -H "Content-Type: application/json" \
   -d '{"url":"https://example.com","formats":["html","markdown","links"]}'
 
-# Test database connection
-python -c "import psycopg2; conn = psycopg2.connect(dbname='rag', user='postgres', password='postgres', host='localhost'); print('✅ Database connected!')"
+# Test Webscraper API
+curl http://localhost:8000/
 ```
 
-### Step 4: Initialize Database
+## 🚀 Quick Start
+
+### 1. Test the Setup
+
+Run the integration test to verify everything is working:
 
 ```bash
-python -m src.scripts.init_db
-```
-
-### Step 5: Initialize Database
-
-```bash
-# Initialize the database schema
-python db_utils.py init
-
-# Check database status
-python db_utils.py status
-```
-
-### Step 6: Test the Setup
-
-Run the comprehensive test suite:
-
-```bash
-python test_system.py
+python test_firecrawl_integration.py
 ```
 
 Expected output:
@@ -223,7 +129,21 @@ Expected output:
 ✅ System is ready for use!
 ```
 
-🎉 All tests passed! Firecrawl integration is working correctly.
+### 2. Start Crawling
+
+```bash
+# Start a crawl job
+curl -X POST http://localhost:8000/api/crawl \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","max_depth":2,"max_pages":10}'
+
+# Check job status
+curl http://localhost:8000/api/crawl/{job_id}/status
+
+# Search crawled content
+curl -X POST http://localhost:8000/api/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"your search query","limit":5}'
 ```
 
 ## 🛠️ Docker Management Commands
@@ -233,11 +153,8 @@ Expected output:
 # Start Firecrawl
 cd ../crawler/firecrawl && docker-compose up -d
 
-# Start PostgreSQL
-cd ../../webscraper && docker-compose up -d db
-
-# Or use the convenience script
-./start-services.sh
+# Start Webscraper API
+cd ../../webscraper && docker-compose -f api/host/docker-compose.yml up -d
 ```
 
 ### Stop Services
@@ -245,11 +162,8 @@ cd ../../webscraper && docker-compose up -d db
 # Stop Firecrawl
 cd ../crawler/firecrawl && docker-compose down
 
-# Stop PostgreSQL
-cd ../../webscraper && docker-compose down
-
-# Stop all services
-docker-compose down
+# Stop Webscraper API
+cd ../../webscraper && docker-compose -f api/host/docker-compose.yml down
 ```
 
 ### Check Service Status
@@ -260,8 +174,8 @@ docker ps
 # Check Firecrawl logs
 cd ../crawler/firecrawl && docker-compose logs -f api
 
-# Check database logs
-docker-compose logs -f db
+# Check Webscraper API logs
+cd ../../webscraper && docker-compose -f api/host/docker-compose.yml logs -f
 ```
 
 ### Restart Services
@@ -269,154 +183,22 @@ docker-compose logs -f db
 # Restart Firecrawl
 cd ../crawler/firecrawl && docker-compose restart
 
-# Restart PostgreSQL
-cd ../../webscraper && docker-compose restart db
-
-# Restart everything
-./start-services.sh
+# Restart Webscraper API
+cd ../../webscraper && docker-compose -f api/host/docker-compose.yml restart
 ```
-
-### Clean Up (if needed)
-```bash
-# Stop and remove all containers
-docker-compose down
-
-# Remove volumes (WARNING: This will delete all data)
-docker-compose down -v
-
-# Remove all unused containers, networks, and images
-docker system prune -a
-```
-
-## 🚀 Quick Start
-
-### 1. Test the Setup
-
-Run the integration test to verify everything is working:
-
-```bash
-python test_firecrawl_integration.py
-```
-
-Expected output:
-```
-🚀 Starting Firecrawl integration tests...
-
-Testing Firecrawl API directly...
-POSTing to http://localhost:3002/v1/scrape...
-✅ Scrape completed successfully!
-
-==================================================
-Testing FirecrawlFetcher integration...
-✅ Crawl completed successfully!
-
-🎉 All tests passed! Firecrawl integration is working correctly.
-```
-
-### 2. Crawl a Website
-
-```bash
-python -m src.crawler.crawler https://aezion.com
-```
-
-**Expected Output**: The crawler should process multiple pages (not just 1):
-```
-INFO: Starting crawl from https://aezion.com
-INFO: Processing 1 URLs at depth 0
-INFO: Using 28 same-domain links from Firecrawl for https://www.aezion.com (filtered from 32 total)
-INFO: Added 27 new URLs to frontier from https://www.aezion.com
-...
-INFO: Crawl complete. Total pages processed: 174
-```
-
-### 3. Generate Embeddings
-
-```bash
-python -m src.embedder.embedder
-```
-
-### 4. Search Content
-
-```bash
-python -m src.search.semantic "custom software development services"
-```
-
-## 🗄️ Database
-
-### Schema
-
-The system uses PostgreSQL with pgvector for vector operations:
-
-```sql
--- Main pages table
-CREATE TABLE pages (
-    url                 text PRIMARY KEY,           -- Unique URL identifier
-    title               text,                       -- Page title from HTML
-    clean_text          text,                       -- Cleaned content from Firecrawl
-    raw_html            text,                       -- Original HTML content
-    markdown_checksum   text,                       -- SHA256 hash of markdown content
-    markdown_changed    timestamptz,                -- When content last changed
-    metadata            jsonb,                      -- Complete Firecrawl response data
-    last_seen           timestamptz,                -- Last crawl timestamp
-    summary_vec         vector(1024),               -- Page-level embedding
-    embedded_at         timestamptz,                -- When embedding was created
-    category            varchar(20),                -- Page category (content, hubs, etc.)
-    category_confidence decimal(3,2)                -- Confidence in categorization
-);
-
--- Text chunks for granular search
-CREATE TABLE chunks (
-    page_url    text REFERENCES pages(url) ON DELETE CASCADE,
-    chunk_index integer,
-    text        text,
-    vec         vector(1024),
-    PRIMARY KEY (page_url, chunk_index)
-);
-
--- Keywords with embeddings
-CREATE TABLE keywords (
-    url         text REFERENCES pages(url) ON DELETE CASCADE,
-    phrase      text NOT NULL,
-    embedding   vector(1024)
-);
-```
-
-### Database Utilities
-
-Use `db_utils.py` for database operations:
-
-```bash
-# Check database status and statistics
-python db_utils.py status
-
-# Check metadata structure
-python db_utils.py metadata
-
-# Initialize database schema
-python db_utils.py init
-
-# Run all database checks
-python db_utils.py all
-```
-
-### pgAdmin Access
-
-Access pgAdmin at http://localhost:5050:
-- **Email**: admin@example.com
-- **Password**: admin
-
-**Connection Details:**
-- **Host**: rag_db
-- **Port**: 5432
-- **Database**: rag
-- **Username**: postgres
-- **Password**: postgres
 
 ## 🔧 Configuration
 
 Key settings in `src/config/settings.py`:
 
 ```python
+# REST API configuration - Points to external database API
+REST_API_CONFIG = {
+    "base_url": "http://localhost:4000/api",
+    "timeout": 30,
+    "retry_attempts": 3,
+}
+
 MODEL_CONFIG = {
     "name": "BAAI/bge-large-en-v1.5",  # 1024-dimensional embeddings
     "chunk_tokens": 500,               # Tokens per chunk
@@ -446,12 +228,9 @@ cd ../crawler/firecrawl
 docker-compose up -d
 ```
 
-#### 2. "Connection refused" to PostgreSQL
-**Error**: `connection to server at "localhost" (::1), port 5432 failed`
-**Solution**:
-```bash
-docker-compose up -d db
-```
+#### 2. "Connection refused" to Database API
+**Error**: `Cannot connect to host localhost:4000`
+**Solution**: Start the external database API service
 
 #### 3. Only 1 page crawled instead of many
 **Issue**: Crawler only processes homepage
@@ -483,8 +262,11 @@ curl -X POST http://localhost:3002/v1/scrape \
   -H "Content-Type: application/json" \
   -d '{"url":"https://example.com","formats":["html","markdown","links"]}'
 
-# Test database connection
-python -c "import psycopg2; conn = psycopg2.connect(dbname='rag', user='postgres', password='postgres', host='localhost'); print('Database connected!')"
+# Test Webscraper API
+curl http://localhost:8000/
+
+# Test Database API
+curl http://localhost:4000/health
 ```
 
 ## 📊 Performance
@@ -492,41 +274,32 @@ python -c "import psycopg2; conn = psycopg2.connect(dbname='rag', user='postgres
 - **Crawling**: 8 concurrent requests, 0.2s rate limit
 - **Embeddings**: 1024-dimensional vectors
 - **Search**: HNSW index for O(log n) similarity search
-- **Storage**: Efficient bulk operations with pgvector
+- **Storage**: External database API with efficient bulk operations
+
+## 📚 API Documentation
+
+### Webscraper API Endpoints
+
+- **Health Check**: `GET /`
+- **Start Crawl**: `POST /api/crawl`
+- **Crawl Status**: `GET /api/crawl/{job_id}/status`
+- **Search**: `POST /api/search`
+
+### Example Usage
+
+```bash
+# Start a crawl
+curl -X POST http://localhost:8000/api/crawl \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","max_depth":2,"max_pages":10}'
+
+# Search content
+curl -X POST http://localhost:8000/api/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"machine learning","limit":5}'
+```
 
 ## 📚 Documentation
 
 - [Test Guide](TEST_GUIDE.md) - Comprehensive testing instructions
-- [Architecture Details](TEST_GUIDE.md#architecture-benefits) - Technical deep dive
-- [Troubleshooting](TEST_GUIDE.md#troubleshooting) - Common issues and solutions
-
-## 🎯 Use Cases
-
-- **Content Discovery**: Crawl and index website content
-- **Semantic Search**: Find relevant content using natural language
-- **Change Monitoring**: Track content updates across websites
-- **Knowledge Base**: Build searchable document collections
-
-## 🔍 Example Output
-
-```bash
-$ python -m src.search.semantic "custom software development services"
-
-#1  score=0.713  https://www.aezion.com/blogs/how-to-choose-the-right-custom-software-development-company
-How To Choose the Right Custom Software Development Company Choosing a software development company to create a custom solution can be challenging...
-
-#2  score=0.688  https://www.aezion.com/blogs/custom-software-development-project-management
-Custom software development and project management can mean the difference between the success and failure of a custom software development project...
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
+- [Architecture Details](TEST_GUIDE.md#architecture-benefits) - Technical deep dive 

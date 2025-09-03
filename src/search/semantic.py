@@ -26,49 +26,47 @@ Example:
 """
 from typing import List, Tuple, Optional
 import sys
-import psycopg2
 from sentence_transformers import SentenceTransformer
 
-from src.config.settings import DB_CONFIG, MODEL_CONFIG, SEARCH_CONFIG
+from src.config.settings import REST_API_CONFIG, MODEL_CONFIG, SEARCH_CONFIG
 
 class SemanticSearch:
     def __init__(self):
         self.model = SentenceTransformer(MODEL_CONFIG["name"])
-        self.conn = psycopg2.connect(**DB_CONFIG)
-        self.cur = self.conn.cursor()
+        self.rest_config = REST_API_CONFIG
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.cur.close()
-        self.conn.close()
+        pass
 
     def search(self, question: str, top_k: int = SEARCH_CONFIG["top_k"]) -> List[Tuple[str, str, float]]:
-        """Search for semantically similar chunks."""
+        """Search for semantically similar chunks via REST API."""
         # Encode the question
         q_vec = self.model.encode(
             question,
             normalize_embeddings=True
         ).tolist()
 
-        # Configure HNSW search
-        self.cur.execute(f"SET hnsw.ef_search = {SEARCH_CONFIG['ef_search']};")
-
-        # Execute search query
-        self.cur.execute(
-            """
-            WITH q AS (SELECT %s::vector AS v)
-            SELECT c.page_url,
-                   c.text,
-                   1 - (c.vec <=> (SELECT v FROM q)) AS score
-            FROM chunks c
-            ORDER BY c.vec <=> (SELECT v FROM q)
-            LIMIT %s
-            """,
-            (q_vec, top_k),
-        )
-        return self.cur.fetchall()
+        # Execute search via REST API
+        import requests
+        try:
+            url = f"{self.rest_config['base_url']}/vectors/search"
+            data = {
+                "vector": q_vec,
+                "limit": top_k
+            }
+            response = requests.post(url, json=data, timeout=self.rest_config['timeout'])
+            response.raise_for_status()
+            result = response.json()
+            
+            # Convert to expected format (url, text, score)
+            search_results = result.get("data", {}).get("pages", [])
+            return [(item["url"], item.get("clean_text", "")[:300], item.get("similarity", 0.0)) for item in search_results]
+        except Exception as e:
+            print(f"[ERROR] Exception in search: {e}")
+            return []
 
     def format_results(self, results: List[Tuple[str, str, float]]) -> str:
         """Format search results for display."""

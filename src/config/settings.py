@@ -1,14 +1,14 @@
 """
 Central configuration for the webscraper project.
 """
+import os
 from typing import Dict
 
-# Database configuration
-DB_CONFIG: Dict[str, str] = {
-    "dbname": "rag",
-    "user": "postgres",
-    "password": "postgres",
-    "host": "localhost",
+# REST API configuration - Updated to use our database API
+REST_API_CONFIG = {
+    "base_url": os.getenv("REST_CONFIG_BASE_URL", "http://localhost:4000") + "/api",
+    "timeout": int(os.getenv("REST_CONFIG_TIMEOUT", "30")),
+    "retry_attempts": 3,
 }
 
 # Model configuration
@@ -30,12 +30,7 @@ SEARCH_CONFIG = {
     "ef_search": 200,  # HNSW search parameter
 }
 
-# Class imports
-from src.core.implementations.firecrawl_fetcher import FirecrawlFetcher
-from src.core.implementations.firecrawl_parser import FirecrawlParser
-from src.core.implementations.postgres_storage import PostgresStorage
-
-# Component classes
-FETCHER_CLS = FirecrawlFetcher
-PARSER_CLS = FirecrawlParser
-STORAGE_CLS = PostgresStorage
+# Component class names (to avoid circular imports)
+FETCHER_CLS_NAME = "src.core.implementations.firecrawl_fetcher.FirecrawlFetcher"
+PARSER_CLS_NAME = "src.core.implementations.firecrawl_parser.FirecrawlParser"
+STORAGE_CLS_NAME = "src.core.implementations.rest_api_storage.RestApiStorage"
